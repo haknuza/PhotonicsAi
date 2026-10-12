@@ -28,6 +28,7 @@ def build_llm(model: str | None = None, base_url: str | None = None,
         base_url=base_url or os.environ.get("LLM_BASE_URL", "http://localhost:11434/v1"),
         api_key=api_key or os.environ.get("LLM_API_KEY", "ollama"),
         temperature=temperature,
+        default_headers={"Accept-Encoding": "identity"},
         timeout=timeout_s,
         max_retries=2,
     )

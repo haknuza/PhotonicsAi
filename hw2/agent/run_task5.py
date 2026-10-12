@@ -24,10 +24,17 @@ from agent_system.llm import build_llm
 HERE = Path(__file__).parent
 
 
+def default_mat_path() -> Path:
+    candidates = (
+        HERE / "data" / "SNLS80mV.mat",
+        HERE.parent.parent / "Task6" / "silverbox-agents" / "data" / "SNLS80mV.mat",
+    )
+    return next((path.resolve() for path in candidates if path.is_file()), candidates[0].resolve())
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mat", default=str(HERE / "data" / "SNLS80mV.mat"),
-                    help="path to SNLS80mV.mat (default: data/SNLS80mV.mat)")
+    ap.add_argument("--mat", help="path to SNLS80mV.mat (default: local data/ or Task 6 data/)")
     ap.add_argument("--model", help="model name (default: $LLM_MODEL)")
     ap.add_argument("--base-url", help="OpenAI-compatible endpoint (default: $LLM_BASE_URL or local Ollama)")
     ap.add_argument("--runs-dir", default=str(HERE / "runs"))
@@ -36,7 +43,7 @@ def main() -> int:
     ap.add_argument("--script-timeout", type=float, default=300, help="seconds per executed script (spec: 300)")
     args = ap.parse_args()
 
-    mat = Path(args.mat).expanduser().resolve()
+    mat = Path(args.mat).expanduser().resolve() if args.mat else default_mat_path()
     if not mat.is_file():
         sys.exit(f"data file not found: {mat}\nDownload SNLS80mV.mat from https://www.nonlinearbenchmark.org/")
 
