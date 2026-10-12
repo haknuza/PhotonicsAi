@@ -1,9 +1,12 @@
-# Four-role agentic system (LangGraph) - Homework 1, Task 6
+# Four-role agentic system (LangGraph) - shared Homework 2 base
 
 A `StateGraph` of four nodes - **orchestrator, scientist, general, executor** - that share one state: the
 dialogue. Each turn is `{role, text}`. A node reads every message already in the state (including what the
 other roles wrote) and appends exactly one turn of its own. The system is validated by giving it Task 5
 (Silverbox PINN) and letting it try to solve it.
+
+This folder is a copy of the Homework 1, Task 6 agent in `../../Task6/silverbox-agents/`. Make Homework 2 agent
+extensions here so both Homework 2 tasks can share the same implementation.
 
 ```
 START -> orchestrator --(model decision)--> scientist | general | executor | END
@@ -30,7 +33,7 @@ Each run writes `runs/<timestamp>/`: `work/` (every script the executor wrote an
 `.stdout.txt`/`.stderr.txt`), `transcript.md` (which agent did what, turn by turn - use it in the PDF),
 `transcript.json`, `summary.json`.
 
-## How the spec is met
+## Inherited Homework 1, Task 6 behavior
 
 | Requirement | Where |
 |---|---|
