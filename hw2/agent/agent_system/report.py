@@ -4,18 +4,35 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .state import Turn, count_decisions, last_decision, verified_test_rmse
+from .state import Turn, count_decisions, count_pauses, last_decision, verified_test_rmse
 
 
 def summarize(messages: list[Turn], max_decisions: int) -> dict:
     d = last_decision(messages)
-    finished = bool(d and d["next_role"] == "finish")
+    last_decision_index = next(
+        (i for i in range(len(messages) - 1, -1, -1)
+         if messages[i]["role"] == "orchestrator" and "decision" in messages[i]),
+        -1,
+    )
+    approved_human_finish = bool(
+        d and d["next_role"] == "human" and d.get("kind") == "hard" and d.get("then") == "finish"
+        and any(
+            m["role"] == "human" and m.get("answers") == "hard"
+            and m["text"].strip().lower() in ("y", "yes")
+            for m in messages[last_decision_index + 1:]
+        )
+    )
+    finished = bool(d and (d["next_role"] == "finish" or approved_human_finish))
     n = count_decisions(messages)
     last_ok = next((m for m in reversed(messages) if m["role"] == "executor" and m.get("test_rmse") is not None), None)
+    route = [m["decision"]["next_role"] for m in messages if m["role"] == "orchestrator"]
+    if approved_human_finish:
+        route.append("finish")
     return {
         "status": "finished" if finished else ("decision_budget_spent" if n >= max_decisions else "stopped_early"),
         "decisions_used": n,
-        "route": [m["decision"]["next_role"] for m in messages if m["role"] == "orchestrator"],
+        "human_pauses_used": count_pauses(messages),
+        "route": route,
         "verified_test_rmse": verified_test_rmse(messages),
         "verified_train_rmse": last_ok.get("train_rmse") if last_ok else None,
         "scripts_run": [r["file"] for m in messages if m["role"] == "executor" for r in m.get("runs", [])],
@@ -31,9 +48,16 @@ def to_markdown(messages: list[Turn], summary: dict) -> str:
            "| turn | role | what it did |", "|---|---|---|"]
     for i, m in enumerate(messages, 1):
         if m["role"] == "orchestrator":
-            what = f"decided next = {m['decision']['next_role']}"
+            d = m["decision"]
+            what = f"decided next = {d['next_role']}"
+            if d["next_role"] == "human":
+                what += f" ({d.get('kind')}: {d.get('question', '')})"
         elif m["role"] == "executor":
             what = "; ".join(f"{r['file']} exit {r['exit_code']}" for r in m.get("runs", [])) or "ran nothing"
+        elif m["role"] == "human":
+            what = m["text"].splitlines()[-1]
+        elif m["role"] == "harness":
+            what = m["text"]
         else:
             what = "spoke"
         out.append(f"| {i} | {m['role']} | {what} |")

@@ -1,6 +1,6 @@
-# Four-role agentic system (LangGraph) - shared Homework 2 base
+# Agentic system (LangGraph) - shared Homework 2 base
 
-A `StateGraph` of four nodes - **orchestrator, scientist, general, executor** - that share one state: the
+A `StateGraph` of five nodes - **orchestrator, scientist, general, executor, human** - that share one state: the
 dialogue. Each turn is `{role, text}`. A node reads every message already in the state (including what the
 other roles wrote) and appends exactly one turn of its own. The system is validated by giving it Task 5
 (Silverbox PINN) and letting it try to solve it.
@@ -9,16 +9,21 @@ This folder is a copy of the Homework 1, Task 6 agent in `../../Task6/silverbox-
 extensions here so both Homework 2 tasks can share the same implementation.
 
 ```
-START -> orchestrator --(model decision)--> scientist | general | executor | END
-              ^                                  |          |         |
-              +----------------------------------+----------+---------+   (edge returns the turn)
+START -> orchestrator --> scientist | general | executor | human | END
+              ^                         |          |         |
+              +-------------------------+----------+---------+   (edge returns the turn)
 ```
+
+Human ambiguity questions collect an answer and return to the orchestrator. Hard decisions interrupt the
+graph and pause for approval; "yes"/"y" hands off to `then`, while any other reply records a refusal and
+returns to the orchestrator. Human pauses do not use the eight-decision budget and are capped at four per
+run. Handing off to `finish` still requires a verified executor test RMSE.
 
 ## Run it
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q                                   # 20 tests, no LLM needed (scripted model)
+python -m pytest -q                                   # tests, no LLM needed (scripted model)
 
 # any OpenAI-compatible server for an open-source model, e.g. Ollama:
 export LLM_MODEL=qwen2.5-coder:14b                    # must support native tool calling
@@ -37,10 +42,11 @@ Each run writes `runs/<timestamp>/`: `work/` (every script the executor wrote an
 
 | Requirement | Where |
 |---|---|
-| StateGraph, four nodes, state = dialogue, each turn has role name + text | `agent_system/state.py`, `graph.py` |
-| Orchestrator decision = {next role, instruction, one-sentence reason}, made by a model call; no keyword table or fixed script | `ask_for_decision` in `graph.py` (invalid answers are re-asked; after 4 failures the run raises instead of falling back to rules) |
+| StateGraph, five nodes, state = dialogue, each turn has role name + text | `agent_system/state.py`, `graph.py` |
+| Orchestrator decision includes next role, instruction and reason; human decisions also include kind, question, and (for hard decisions) then | `Decision` / `ask_for_decision` in `graph.py` |
 | Orchestrator writes no code, has no coding tool | it only ever gets the bare model; an instruction containing a code fence is rejected and re-asked |
-| Stops on `finish` or after 8 decisions | `after_orchestrator` / `after_specialist` edges. The 8th decision's specialist still runs, then the graph ends. |
+| Human ambiguity and hard-approval flows | the `human` node asks for input; ambiguity returns to the orchestrator, hard approval follows `then`; four pauses maximum |
+| Stops on `finish` or after 8 counted decisions; asks at most 4 human questions | the conditional edges and `can_ask` validation. The last routed role still runs, then the graph ends. |
 | May finish only after an executor turn holds a test RMSE printed by a script that ran | `can_finish` guard. The flag lives in the turn and is set by harness code only when the script **exited 0** and its stdout has a line `TEST_RMSE=<finite, non-negative float>`. Text the model writes cannot set it. |
 | Scientist: theory + plan, no coding tool, no unmeasured numbers | `prompts.SCIENTIST`; plain model call |
 | General: high-level questions only, no tool, no plan | `prompts.GENERAL`; plain model call |

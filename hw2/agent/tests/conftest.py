@@ -34,8 +34,13 @@ class ScriptedLLM:
         return item if isinstance(item, AIMessage) else AIMessage(content=item)
 
 
-def decision(next_role, instruction="do it", reason="because"):
-    return json.dumps({"next_role": next_role, "instruction": instruction, "reason": reason})
+def decision(next_role, instruction="do it", reason="because", **fields):
+    return json.dumps({
+        "next_role": next_role,
+        "instruction": instruction,
+        "reason": reason,
+        **fields,
+    })
 
 
 def tool_call(code, filename="fit.py", call_id="c1"):

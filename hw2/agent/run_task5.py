@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Give the four-role system Task 5 and let it try to solve it.
+"""Give the agent system Task 5 and let it try to solve it.
 
     export LLM_MODEL=qwen2.5-coder:14b          # any OpenAI-compatible server, see agent_system/llm.py
     python run_task5.py
@@ -20,6 +20,7 @@ from pathlib import Path
 
 from agent_system import MAX_DECISIONS, build_graph, write_transcript
 from agent_system.llm import build_llm
+from langgraph.types import Command
 
 HERE = Path(__file__).parent
 
@@ -59,23 +60,41 @@ def main() -> int:
                         max_decisions=args.max_decisions, timeout_s=args.script_timeout,
                         env={"DATA_FILE": str(mat)})
 
-    # The user speaks only to the orchestrator: the dialogue starts with one user turn, and the first edge
-    # out of START goes to the orchestrator node.
+    # The task starts with one user turn and the first edge out of START goes to the orchestrator.
     messages = [{"role": "user", "text": task}]
     shown, error = 0, None
+    config = {
+        "configurable": {"thread_id": run_dir.name},
+        "recursion_limit": 6 * args.max_decisions + 10,
+    }
     try:
-        for state in graph.stream({"messages": messages}, stream_mode="values",
-                                  config={"recursion_limit": 6 * args.max_decisions + 10}):
-            messages = state["messages"]
-            for m in messages[shown:]:
-                if m["role"] == "orchestrator":
-                    print(f"[orchestrator] -> {m['decision']['next_role']}: {m['decision']['reason']}", flush=True)
-                elif m["role"] == "executor":
-                    runs = "; ".join(f"{r['file']} exit {r['exit_code']}" for r in m.get("runs", [])) or "no run"
-                    print(f"[executor] {runs}  test_rmse={m.get('test_rmse')}", flush=True)
-                elif m["role"] != "user":
-                    print(f"[{m['role']}] {len(m['text'])} characters", flush=True)
-            shown = len(messages)
+        graph_input: dict | Command = {"messages": messages}
+        while True:
+            for state in graph.stream(graph_input, stream_mode="values", config=config):
+                if "messages" not in state:
+                    continue
+                messages = state["messages"]
+                for m in messages[shown:]:
+                    if m["role"] == "orchestrator":
+                        print(f"[orchestrator] -> {m['decision']['next_role']}: {m['decision']['reason']}", flush=True)
+                    elif m["role"] == "executor":
+                        runs = "; ".join(f"{r['file']} exit {r['exit_code']}" for r in m.get("runs", [])) or "no run"
+                        print(f"[executor] {runs}  test_rmse={m.get('test_rmse')}", flush=True)
+                    elif m["role"] == "human":
+                        print(f"[human] {m['text']}", flush=True)
+                    elif m["role"] == "harness":
+                        print(f"[harness] {m['text']}", flush=True)
+                    elif m["role"] != "user":
+                        print(f"[{m['role']}] {len(m['text'])} characters", flush=True)
+                shown = len(messages)
+
+            snapshot = graph.get_state(config)
+            if not snapshot.next:
+                break
+
+            request = snapshot.tasks[0].interrupts[0].value
+            print(f"\n[graph paused: {request['kind']}] {request['question']}", flush=True)
+            graph_input = Command(resume=input("your reply> "))
     except Exception:                                    # keep the partial dialogue; it is the evidence
         error = traceback.format_exc()
         print(error, file=sys.stderr)

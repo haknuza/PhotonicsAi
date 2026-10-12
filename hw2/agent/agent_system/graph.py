@@ -1,6 +1,6 @@
-"""The LangGraph StateGraph: four nodes sharing one dialogue.
+"""The LangGraph StateGraph: four model roles and a human node sharing one dialogue.
 
-    START -> orchestrator --(model decides)--> scientist | general | executor | END
+    START -> orchestrator --(model decides)--> scientist | general | executor | human | END
                   ^                                  |         |         |
                   +----------------------------------+---------+---------+   (edge returns the turn)
 
@@ -12,19 +12,22 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, Field, field_validator
+from langgraph.types import Command, interrupt
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import prompts
 from .coding_tool import DEFAULT_TIMEOUT_S, CodingTool
-from .state import (NEXT_ROLES, SPECIALISTS, DialogueState, count_decisions,
-                    last_decision, render_dialogue, verified_test_rmse)
+from .state import (NEXT_ROLES, SPECIALISTS, DialogueState, count_decisions, count_pauses,
+                    has_approved_executor_plan, last_decision, render_dialogue, verified_test_rmse)
 
 MAX_DECISIONS = 8
+MAX_PAUSES = 4
 _THINK = re.compile(r"<think>.*?</think>", re.S | re.I)
 
 
@@ -49,9 +52,13 @@ class OrchestratorError(RuntimeError):
 
 
 class Decision(BaseModel):
+    readings: list[str] = Field(default_factory=list)
     next_role: str
     instruction: str = ""
     reason: str = ""
+    kind: str = ""
+    question: str = ""
+    then: str = ""
 
     @field_validator("next_role")
     @classmethod
@@ -60,6 +67,22 @@ class Decision(BaseModel):
         if v not in NEXT_ROLES:
             raise ValueError(f"next_role must be one of {NEXT_ROLES}, got {v!r}")
         return v
+
+    @field_validator("kind", "then")
+    @classmethod
+    def _lower(cls, v: str) -> str:
+        return v.strip().lower()
+
+    @model_validator(mode="after")
+    def _validate_human_decision(self):
+        if self.next_role == "human":
+            if self.kind not in ("ambiguity", "hard"):
+                raise ValueError("kind must be 'ambiguity' or 'hard' when next_role is human")
+            if not self.question.strip():
+                raise ValueError("question is required when next_role is 'human'")
+            if self.kind == "hard" and self.then not in ("executor", "finish"):
+                raise ValueError("a hard decision needs then = executor or finish")
+        return self
 
 
 def parse_decision(text: str) -> Decision:
@@ -75,11 +98,15 @@ def parse_decision(text: str) -> Decision:
             continue
         if isinstance(obj, dict) and ("next_role" in obj or "next" in obj):
             obj.setdefault("next_role", obj.get("next"))
-            return Decision(**{k: obj[k] for k in ("next_role", "instruction", "reason") if k in obj})
+            return Decision(**{
+                k: obj[k] for k in ("readings", "next_role", "instruction", "reason", "kind", "question", "then")
+                if k in obj
+            })
     raise ValueError("no JSON object with a next_role field found")
 
 
-def ask_for_decision(llm, system: str, user: str, can_finish: bool, attempts: int = 4) -> Decision:
+def ask_for_decision(llm, system: str, user: str, can_finish: bool, can_ask: bool = True,
+                     attempts: int = 4) -> Decision:
     """A model call that must return a valid Decision. Rejected answers are re-asked with feedback.
 
     There is deliberately no keyword fallback: if the model cannot produce a valid decision, the run
@@ -93,12 +120,20 @@ def ask_for_decision(llm, system: str, user: str, can_finish: bool, attempts: in
         except ValueError as e:
             feedback = f"\n\nYour previous answer was rejected: {e}. Answer with the JSON object only."
             continue
-        if d.next_role == "finish" and not can_finish:
+        wants_finish = d.next_role == "finish" or (d.next_role == "human" and d.then == "finish")
+        if wants_finish and not can_finish:
             feedback = ("\n\nYour previous answer was rejected: you may finish only after an executor turn "
                         "contains a test RMSE printed by a script that ran and exited 0, and the STATUS "
-                        "line says none exists yet. Choose scientist, general or executor.")
+                        "line says none exists yet. Choose scientist, general, executor, or ask the human "
+                        "to hand off to a non-finish role.")
             continue
-        if d.next_role != "finish" and not d.instruction.strip():
+        if d.next_role == "human" and not can_ask:
+            feedback = "\n\nYour previous answer was rejected: the limit of questions to the person is reached."
+            continue
+        needs_instr = d.next_role != "finish" and not (
+            d.next_role == "human" and d.kind == "ambiguity"
+        )
+        if needs_instr and not d.instruction.strip():
             feedback = "\n\nYour previous answer was rejected: the instruction is empty."
             continue
         if "```" in d.instruction:
@@ -132,8 +167,8 @@ def _tool_schema(tool: CodingTool) -> StructuredTool:
 # ----------------------------------------------------------------------------
 def build_graph(llm, workdir: str | Path, *, max_decisions: int = MAX_DECISIONS,
                 timeout_s: float = DEFAULT_TIMEOUT_S, env: Optional[dict[str, str]] = None,
-                max_tool_calls_per_turn: int = 6):
-    """Compile the four-node StateGraph.
+                max_tool_calls_per_turn: int = 3):
+    """Compile the StateGraph with four model roles and a human-input node.
 
     `llm` is any chat model with .invoke(messages) and .bind_tools(tools). Only the executor ever calls
     bind_tools; the other three nodes use the bare model.
@@ -147,14 +182,21 @@ def build_graph(llm, workdir: str | Path, *, max_decisions: int = MAX_DECISIONS,
         k = count_decisions(msgs)
         if k >= max_decisions:
             raise OrchestratorError("decision budget already spent")
+        pauses = count_pauses(msgs)
         verified = verified_test_rmse(msgs)
         status = (f"STATUS: this will be decision {k + 1} of at most {max_decisions}. "
+                  f"Questions to the person used: {pauses} of {MAX_PAUSES}. "
+                  f"Person has approved running the coding tool for the latest plan: "
+                  f"{'yes' if has_approved_executor_plan(msgs) else 'no'}. "
                   + (f"A script that exited 0 printed test RMSE = {verified:.6g}; you may finish."
                      if verified is not None else
                      "No executor turn has a verified test RMSE yet; you may NOT finish."))
-        user = f"{render_dialogue(msgs)}\n\n---\n{status}\nReturn your decision as the JSON object."
-        d = ask_for_decision(llm, prompts.ORCHESTRATOR, user, can_finish=verified is not None)
+        user = f"{render_dialogue(msgs, limit=1500)}\n\n---\n{status}\nReturn your decision as the JSON object."
+        d = ask_for_decision(llm, prompts.ORCHESTRATOR, user, can_finish=verified is not None,
+                             can_ask=pauses < MAX_PAUSES)
         text = f"NEXT: {d.next_role}\nINSTRUCTION: {d.instruction}\nREASON: {d.reason}"
+        if d.next_role == "human":
+            text += f"\nKIND: {d.kind}\nQUESTION: {d.question}"
         return {"messages": [{"role": "orchestrator", "text": text, "decision": d.model_dump()}]}
 
     # ---- scientist, general: plain model calls, no tools -------------------
@@ -174,7 +216,8 @@ def build_graph(llm, workdir: str | Path, *, max_decisions: int = MAX_DECISIONS,
         msgs = state["messages"]
         d = last_decision(msgs)
         instr = d["instruction"] if d else "(none)"
-        user = (f"{render_dialogue(msgs)}\n\n---\nYou are the EXECUTOR. The orchestrator's instruction to you: {instr}\n"
+        user = (f"{render_dialogue(msgs, limits={'user': 1500, 'orchestrator': 300, 'human': 200})}\n\n---\n"
+                f"You are the EXECUTOR. The orchestrator's instruction to you: {instr}\n"
                 f"Working directory for your scripts: {coding_tool.workdir}")
         convo = [SystemMessage(content=prompts.EXECUTOR), HumanMessage(content=user)]
         bound = llm.bind_tools([tool_schema])
@@ -204,7 +247,7 @@ def build_graph(llm, workdir: str | Path, *, max_decisions: int = MAX_DECISIONS,
                     n_calls += 1
                     result = coding_tool.write_and_run(str(args.get("filename") or "script.py"), args["code"])
                     runs.append(result)
-                    out = result.report()
+                    out = result.report()[:1500]
                 convo.append(ToolMessage(content=out, tool_call_id=call["id"], name=call["name"]))
             if n_calls >= max_tool_calls_per_turn:
                 convo.append(HumanMessage(content="The tool-call limit for this turn is reached. Reply in plain text "
@@ -212,11 +255,14 @@ def build_graph(llm, workdir: str | Path, *, max_decisions: int = MAX_DECISIONS,
                 try:
                     summary = clean(content_text(bound.invoke(convo)))
                 except Exception as e:
-                    if "tool_use_failed" not in str(e):
-                        raise
-                    convo.append(HumanMessage(content="Your tool call was cut off and could not be parsed. "
-                                                      "Write a much shorter script and call the tool again."))
-                    continue
+                    if "tool_use_failed" in str(e):
+                        convo.append(HumanMessage(content="Your tool call was cut off and could not be parsed. "
+                                                          "Write a much shorter script and call the tool again."))
+                        continue
+                    if "rate_limit" in str(e) or "413" in str(e):
+                        summary = "(summary unavailable: provider rate limit)"
+                        break
+                    raise
                 break
         summary = summary or "(the executor wrote no summary)"
 
@@ -232,24 +278,49 @@ def build_graph(llm, workdir: str | Path, *, max_decisions: int = MAX_DECISIONS,
         }
         return {"messages": [turn]}
 
+    # ---- human clarification / approval -----------------------------------
+    def human(state: DialogueState) -> Command[Literal["orchestrator", "scientist", "general", "executor", "__end__"]]:
+        d = last_decision(state["messages"])
+        reply = str(interrupt({
+            "kind": d["kind"],
+            "question": d["question"],
+            "then": d["then"],
+            "reason": d["reason"],
+        }))
+        turn = {"role": "human", "text": reply, "answers": d["kind"]}
+        if d["kind"] == "ambiguity":
+            return Command(update={"messages": [turn]}, goto="orchestrator")
+        if reply.strip().lower() in ("y", "yes"):
+            return Command(update={"messages": [turn]},
+                           goto=END if d["then"] == "finish" else d["then"])
+        note = {
+            "role": "harness",
+            "text": f"REFUSED: the person declined. The step '{d['then']}' was NOT run; nothing was executed.",
+        }
+        return Command(update={"messages": [turn, note]}, goto="orchestrator")
+
     # ---- routing -------------------------------------------------------------
     def after_orchestrator(state: DialogueState) -> str:
         nxt = last_decision(state["messages"])["next_role"]
         return END if nxt == "finish" else nxt
 
     def after_specialist(state: DialogueState) -> str:
-        # the edge that returns the turn; the run also stops once the decision budget is spent
-        return END if count_decisions(state["messages"]) >= max_decisions else "orchestrator"
+        # Specialist handoffs may follow an approved human pause.
+        return END if (
+            count_decisions(state["messages"]) >= max_decisions
+        ) else "orchestrator"
 
     g = StateGraph(DialogueState)
     g.add_node("orchestrator", orchestrator)
     g.add_node("scientist", specialist("scientist", prompts.SCIENTIST))
     g.add_node("general", specialist("general", prompts.GENERAL))
     g.add_node("executor", executor)
+    g.add_node("human", human)
 
     g.add_edge(START, "orchestrator")
     g.add_conditional_edges("orchestrator", after_orchestrator,
-                            {"scientist": "scientist", "general": "general", "executor": "executor", END: END})
+                            {"scientist": "scientist", "general": "general", "executor": "executor",
+                             "human": "human", END: END})
     for role in SPECIALISTS:
         g.add_conditional_edges(role, after_specialist, {"orchestrator": "orchestrator", END: END})
-    return g.compile()
+    return g.compile(checkpointer=InMemorySaver())

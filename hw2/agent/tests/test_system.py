@@ -4,17 +4,31 @@ from langchain_core.messages import AIMessage
 from agent_system import OrchestratorError, build_graph, summarize
 from agent_system.coding_tool import CodingTool
 from agent_system.graph import parse_decision
-from agent_system.state import count_decisions
+from agent_system.prompts import ORCHESTRATOR
+from agent_system.report import to_markdown
+from agent_system.state import (count_decisions, count_pauses, has_approved_executor_plan,
+                                render_dialogue)
 from conftest import OK_SCRIPT, ScriptedLLM, decision, tool_call
+from langgraph.types import Command
 
 USER = [{"role": "user", "text": "Do Task 5."}]
 
 
 def run(script, workdir, **kw):
+    human_responses = iter(kw.pop("human_responses", []))
     llm = ScriptedLLM(script)
     graph = build_graph(llm, workdir, **kw)
-    state = graph.invoke({"messages": list(USER)}, config={"recursion_limit": 80})
-    return state["messages"], llm.log
+    config = {"configurable": {"thread_id": str(workdir)}, "recursion_limit": 80}
+    graph_input = {"messages": list(USER)}
+    while True:
+        for _state in graph.stream(graph_input, stream_mode="values", config=config):
+            pass
+        snapshot = graph.get_state(config)
+        pending = [item for task in snapshot.tasks for item in task.interrupts]
+        if not pending:
+            break
+        graph_input = Command(resume=next(human_responses))
+    return snapshot.values["messages"], llm.log
 
 
 # ------------------------------------------------------------------ coding tool
@@ -58,12 +72,125 @@ def test_tool_rejects_non_finite_negative_or_malformed_rmse(workdir, line):
 
 
 # ------------------------------------------------------------------ parsing
+def test_orchestrator_checks_ambiguity_before_routing_rules():
+    check = "FIRST, before applying any routing rule below:"
+    assert ORCHESTRATOR.index(check) < ORCHESTRATOR.index("Routing rules:")
+    assert "7. AMBIGUITY. Apply the FIRST check above." in ORCHESTRATOR
+    assert "Always list the plausible readings of the latest user request first." in ORCHESTRATOR
+    contract = '{"readings": ["<each plausible reading of the latest user request, 1 to 3 short items>"],'
+    assert contract in ORCHESTRATOR
+
+
 def test_parse_decision_handles_think_blocks_and_fences():
     text = '<think>hmm {"next_role": "finish"}</think>\n```json\n{"next_role": "Scientist", "instruction": "plan", "reason": "r"}\n```'
     d = parse_decision(text)
-    assert d.next_role == "scientist" and d.instruction == "plan"
+    assert d.next_role == "scientist" and d.instruction == "plan" and d.readings == []
+    with_readings = parse_decision(
+        '{"readings": ["explain the result", "run the evaluation"], "next_role": "general"}'
+    )
+    assert with_readings.readings == ["explain the result", "run the evaluation"]
     with pytest.raises(ValueError):
         parse_decision('{"next_role": "banana"}')
+
+
+def test_parse_human_decision_fields_and_required_fields():
+    d = parse_decision(decision(
+        "human", instruction="run it", kind="hard", question="May I run it?", then="executor"
+    ))
+    assert (d.next_role, d.kind, d.question, d.then, d.instruction) == (
+        "human", "hard", "May I run it?", "executor", "run it"
+    )
+
+    for invalid in (
+        decision("human", kind="hard", then="executor", instruction="run it"),
+        decision("human", kind="hard", question="May I?", instruction="run it"),
+        decision("human", kind="unknown", question="May I?", then="executor", instruction="run it"),
+        decision("human", kind="hard", question="May I?", then="human", instruction="run it"),
+        decision("human", kind="hard", question="May I?", then="general", instruction="run it"),
+    ):
+        with pytest.raises(ValueError):
+            parse_decision(invalid)
+
+
+def test_decision_and_pause_counts_are_separate():
+    messages = [
+        {"role": "orchestrator", "decision": {"next_role": "human"}},
+        {"role": "human", "answers": "ambiguity"},
+        {"role": "orchestrator", "decision": {"next_role": "executor"}},
+    ]
+
+    assert count_decisions(messages) == 1
+    assert count_pauses(messages) == 1
+
+
+def test_executor_approval_status_tracks_latest_scientist_plan():
+    messages = [
+        {"role": "scientist", "text": "Plan A"},
+        {"role": "orchestrator", "decision": {
+            "next_role": "human", "kind": "hard", "then": "executor",
+        }},
+        {"role": "human", "text": "yes", "answers": "hard"},
+    ]
+    assert has_approved_executor_plan(messages)
+
+    messages.append({"role": "scientist", "text": "Revised plan B"})
+    assert not has_approved_executor_plan(messages)
+
+    messages.extend([
+        {"role": "orchestrator", "decision": {
+            "next_role": "human", "kind": "hard", "then": "executor",
+        }},
+        {"role": "human", "text": "no", "answers": "hard"},
+    ])
+    assert not has_approved_executor_plan(messages)
+
+
+def test_render_dialogue_clips_each_turn_at_six_thousand_characters():
+    rendered = render_dialogue([{"role": "scientist", "text": "x" * 7000}])
+
+    assert "[1000 characters omitted]" in rendered
+    assert len(rendered) < 6100
+
+
+def test_render_dialogue_supports_per_role_limits_without_clipping_the_task():
+    task = "task " * 850
+    messages = [
+        {"role": "user", "text": task},
+        {"role": "orchestrator", "text": "o" * 1000},
+        {"role": "human", "text": "h" * 1000},
+        {"role": "scientist", "text": "s" * 7000},
+    ]
+
+    rendered = render_dialogue(messages, limits={"orchestrator": 500, "human": 300})
+
+    assert task in rendered
+    assert "[500 characters omitted]" in rendered
+    assert "[700 characters omitted]" in rendered
+    assert "[1000 characters omitted]" in rendered
+    assert "[turn 2] ORCHESTRATOR:" in rendered
+    assert "[turn 3] HUMAN:" in rendered
+    assert "[turn 4] SCIENTIST:" in rendered
+
+
+def test_transcript_handles_human_harness_and_unknown_roles():
+    messages = [
+        {"role": "user", "text": "Task"},
+        {"role": "human", "text": "yes"},
+        {"role": "harness", "text": "REFUSED: no action was run."},
+        {"role": "reviewer", "text": "Review note"},
+    ]
+
+    transcript = to_markdown(messages, {
+        "status": "stopped_early",
+        "decisions_used": 0,
+        "route": [],
+        "verified_test_rmse": None,
+        "verified_train_rmse": None,
+    })
+
+    assert "| 2 | human | yes |" in transcript
+    assert "| 3 | harness | REFUSED: no action was run. |" in transcript
+    assert "| 4 | reviewer | spoke |" in transcript
 
 
 # ------------------------------------------------------------------ graph behaviour
@@ -122,6 +249,154 @@ def test_only_the_executor_gets_the_coding_tool(workdir):
     with_tools = {role for role, bound in log if bound}
     assert with_tools == {"executor"}
     assert {role for role, _ in log} == {"orchestrator", "scientist", "executor"}
+
+
+def test_ambiguity_answer_returns_to_orchestrator(workdir):
+    script = {
+        "orchestrator": [
+            decision("human", kind="ambiguity", question="Which split should I use?"),
+            decision("general", instruction="Explain the split."),
+        ],
+        "general": ["The task specifies the split."],
+    }
+    msgs, _ = run(script, workdir, human_responses=["Use the specified split."], max_decisions=1)
+
+    assert [m["role"] for m in msgs] == ["user", "orchestrator", "human", "orchestrator", "general"]
+    assert msgs[2]["text"] == "Use the specified split."
+    assert msgs[2]["answers"] == "ambiguity"
+
+
+def test_hard_approval_hands_off_to_requested_role(workdir):
+    orchestrator_prompts = []
+
+    def request_approval(messages):
+        orchestrator_prompts.append(messages[1].content)
+        return decision(
+            "human", instruction="run the planned script", kind="hard",
+            question="May I run the planned script?", then="executor",
+        )
+
+    def capture_prompt(messages):
+        orchestrator_prompts.append(messages[1].content)
+        return decision("finish", instruction="Test RMSE 0.0456 was printed.")
+
+    script = {
+        "orchestrator": [
+            request_approval,
+            capture_prompt,
+        ],
+        "executor": [tool_call(OK_SCRIPT), "Ran the planned script."],
+    }
+    msgs, _ = run(script, workdir, human_responses=["yes"])
+
+    assert [m["role"] for m in msgs] == ["user", "orchestrator", "human", "executor", "orchestrator"]
+    assert msgs[2]["text"] == "yes"
+    assert "Person has approved running the coding tool for the latest plan: no." in orchestrator_prompts[0]
+    assert "Person has approved running the coding tool for the latest plan: yes." in orchestrator_prompts[1]
+    assert summarize(msgs, 8)["verified_test_rmse"] == 0.0456
+
+
+def test_hard_approval_reprompts_for_invalid_input(workdir):
+    script = {
+        "orchestrator": [
+            decision("human", instruction="run the planned script", kind="hard",
+                     question="May I run the planned script?", then="executor"),
+            decision("general", instruction="Explain the result."),
+        ],
+        "executor": [tool_call(OK_SCRIPT), "The planned script ran."],
+        "general": ["The result was recorded."],
+    }
+    msgs, _ = run(script, workdir, human_responses=["maybe"], max_decisions=1)
+
+    assert msgs[2]["text"] == "maybe"
+    assert msgs[2]["answers"] == "hard"
+    assert msgs[3]["role"] == "harness"
+    assert "REFUSED:" in msgs[3]["text"] and "NOT run" in msgs[3]["text"]
+    assert "executor" not in [m["role"] for m in msgs]
+
+
+def test_rejected_hard_approval_returns_to_orchestrator(workdir):
+    script = {
+        "orchestrator": [
+            decision("human", instruction="run the planned script", kind="hard",
+                     question="May I run the planned script?", then="executor"),
+            decision("general", instruction="Explain the plan."),
+        ],
+        "general": ["The plan is ready."],
+    }
+    msgs, _ = run(script, workdir, human_responses=["no"], max_decisions=1)
+
+    assert [m["role"] for m in msgs] == ["user", "orchestrator", "human", "harness", "orchestrator", "general"]
+    assert msgs[2]["text"] == "no"
+    assert "REFUSED:" in msgs[3]["text"] and "NOT run" in msgs[3]["text"]
+
+
+def test_human_pause_cap_stops_repeated_questions_without_spending_decisions(workdir):
+    script = {
+        "orchestrator": [
+            decision("human", kind="ambiguity", question=f"Clarify item {i}?")
+            for i in range(4)
+        ],
+    }
+    script["orchestrator"].extend([
+        decision("human", kind="ambiguity", question="Clarify one more item?"),
+        decision("general", instruction="Continue without asking another question."),
+    ])
+    script["general"] = ["Continue."]
+    msgs, _ = run(script, workdir, human_responses=["continue"] * 4, max_decisions=1)
+    summary = summarize(msgs, 8)
+
+    assert count_decisions(msgs) == 1
+    assert count_pauses(msgs) == 4
+    assert summary["human_pauses_used"] == 4
+    assert len([m for m in msgs if m["role"] == "human"]) == 4
+
+
+def test_human_pause_does_not_spend_decision_budget(workdir):
+    script = {
+        "orchestrator": [
+            decision("human", kind="ambiguity", question="Which option?"),
+            decision("executor", instruction="Run the planned script."),
+        ],
+        "executor": [tool_call(OK_SCRIPT), "Ran successfully."],
+    }
+    msgs, _ = run(script, workdir, human_responses=["option A"], max_decisions=1)
+
+    assert [m["role"] for m in msgs] == ["user", "orchestrator", "human", "orchestrator", "executor"]
+    assert count_decisions(msgs) == 1
+    assert count_pauses(msgs) == 1
+
+
+def test_hard_approval_cannot_finish_without_verified_rmse(workdir):
+    script = {
+        "orchestrator": [
+            decision("human", instruction="finish", kind="hard",
+                     question="May I finish?", then="finish"),
+            decision("general", instruction="Explain the current status."),
+        ],
+        "general": ["There is no verified result yet."],
+    }
+    msgs, _ = run(script, workdir, human_responses=["yes"], max_decisions=1)
+
+    assert [m["role"] for m in msgs] == ["user", "orchestrator", "general"]
+    assert summarize(msgs, 8)["status"] == "stopped_early"
+
+
+def test_approved_hard_finish_still_requires_verified_rmse(workdir):
+    script = {
+        "orchestrator": [
+            decision("executor", instruction="run the script"),
+            decision("human", instruction="report the verified result", kind="hard",
+                     question="May I finish?", then="finish"),
+        ],
+        "executor": [tool_call(OK_SCRIPT), "Ran successfully."],
+    }
+    msgs, _ = run(script, workdir, human_responses=["yes"])
+    summary = summarize(msgs, 8)
+
+    assert summary["status"] == "finished"
+    assert summary["route"] == ["executor", "human", "finish"]
+    assert summary["verified_test_rmse"] == 0.0456
 
 
 def test_each_role_reads_what_the_others_wrote(workdir):
@@ -208,6 +483,41 @@ def test_parallel_tool_calls_beyond_the_limit_are_refused(workdir):
     msgs, _ = run(script, workdir, max_tool_calls_per_turn=2)
     ex = next(m for m in msgs if m["role"] == "executor")
     assert len(ex["runs"]) == 2 and "summary text" in ex["text"]
+
+
+def test_executor_keeps_harness_record_when_summary_hits_rate_limit(workdir):
+    def fail_summary(_messages):
+        raise RuntimeError("413 Request too large")
+
+    script = {
+        "orchestrator": [decision("executor"), decision("finish")],
+        "executor": [tool_call(OK_SCRIPT), fail_summary],
+    }
+    msgs, _ = run(script, workdir, max_tool_calls_per_turn=1)
+    ex = next(m for m in msgs if m["role"] == "executor")
+
+    assert ex["test_rmse"] == 0.0456
+    assert "(summary unavailable: provider rate limit)" in ex["text"]
+    assert "TRAIN_RMSE=0.0123" in ex["text"]
+    assert len(ex["runs"]) == 1
+
+
+def test_executor_clips_model_tool_result_but_keeps_harness_record(workdir):
+    def check_tool_result(messages):
+        tool_message = next(message for message in messages if message.type == "tool")
+        assert len(tool_message.content) == 1500
+        return "Ran the script."
+
+    code = "print('x' * 3500)\nprint('TEST_RMSE=0.2')\n"
+    script = {
+        "orchestrator": [decision("executor"), decision("finish")],
+        "executor": [tool_call(code), check_tool_result],
+    }
+    msgs, _ = run(script, workdir, max_tool_calls_per_turn=1)
+    ex = next(m for m in msgs if m["role"] == "executor")
+
+    assert len(ex["runs"][0]["stdout"].splitlines()[0]) == 3500
+    assert "x" * 2000 in ex["text"]
 
 
 def test_tool_call_without_code_runs_nothing(workdir):
