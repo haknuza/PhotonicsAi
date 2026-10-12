@@ -1,0 +1,23 @@
+{
+  "source": "hw2/task2/runs/recorded-agent",
+  "macropixel_counts": [
+    {
+      "macropixel_size": 2,
+      "N": 64
+    },
+    {
+      "macropixel_size": 4,
+      "N": 16
+    },
+    {
+      "macropixel_size": 2,
+      "N": 64
+    }
+  ],
+  "rejected_N": 4,
+  "trace_length": 501,
+  "last_strict_trace_increase_iteration": 500,
+  "last_50_trace_min": 3.0355368870754367,
+  "last_50_trace_max": 3.170372089334258,
+  "last_trace": 3.1494486058409894
+}

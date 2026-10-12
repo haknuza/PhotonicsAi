@@ -1,0 +1,2 @@
+[turn 1] USER:
+Focus the beam on the simulated bench. Choose the settings yourself, compare at least three experiments, and keep the best measured enhancement.

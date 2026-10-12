@@ -1,0 +1,77 @@
+[
+  {
+    "settings": {
+      "macropixel_size": 2,
+      "focus_size": 3,
+      "background_radius": 8,
+      "background_regions": 4,
+      "iterations": 500,
+      "flips": 16,
+      "seed": 0
+    },
+    "enhancement": 3.1151018241178523,
+    "initial_enhancement": 0.8169829926064569,
+    "background_means": [
+      0.3578488341750343,
+      0.4763457682770778,
+      0.4363529806547602,
+      0.5132079635634503
+    ],
+    "enhancement_shot_std": 0.024668319897792668,
+    "accepted": 8,
+    "active_macropixels": 33,
+    "measurements": 1021,
+    "final_exposures": 20,
+    "output": "/home/lilit/Desktop/PhotonicsAi/hw2/task2/runs/recorded-agent/experiment_01"
+  },
+  {
+    "settings": {
+      "macropixel_size": 4,
+      "focus_size": 3,
+      "background_radius": 8,
+      "background_regions": 4,
+      "iterations": 500,
+      "flips": 16,
+      "seed": 0
+    },
+    "enhancement": 1.5580900392961616,
+    "initial_enhancement": 1.5601269543552272,
+    "background_means": [
+      0.650633187619926,
+      0.5902544759707933,
+      0.6322522453274914,
+      0.7451226948308209
+    ],
+    "enhancement_shot_std": 0.01646188251894559,
+    "accepted": 0,
+    "active_macropixels": 10,
+    "measurements": 1021,
+    "final_exposures": 20,
+    "output": "/home/lilit/Desktop/PhotonicsAi/hw2/task2/runs/recorded-agent/experiment_02"
+  },
+  {
+    "settings": {
+      "macropixel_size": 2,
+      "focus_size": 3,
+      "background_radius": 8,
+      "background_regions": 4,
+      "iterations": 500,
+      "flips": 16,
+      "seed": 0
+    },
+    "enhancement": 3.1151018241178523,
+    "initial_enhancement": 0.8169829926064569,
+    "background_means": [
+      0.3578488341750343,
+      0.4763457682770778,
+      0.4363529806547602,
+      0.5132079635634503
+    ],
+    "enhancement_shot_std": 0.024668319897792668,
+    "accepted": 8,
+    "active_macropixels": 33,
+    "measurements": 1021,
+    "final_exposures": 20,
+    "output": "/home/lilit/Desktop/PhotonicsAi/hw2/task2/runs/recorded-agent/experiment_03"
+  }
+]

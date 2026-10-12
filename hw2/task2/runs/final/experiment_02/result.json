@@ -1,0 +1,27 @@
+{
+  "settings": {
+    "macropixel_size": 2,
+    "focus_size": 5,
+    "background_radius": 10,
+    "background_regions": 6,
+    "iterations": 500,
+    "flips": 1,
+    "seed": 0
+  },
+  "enhancement": 2.7818354556344964,
+  "initial_enhancement": 0.8821674145086944,
+  "background_means": [
+    0.20475376238356205,
+    0.1544070177032007,
+    0.17175586858400738,
+    0.2173483021417859,
+    0.29768299083631333,
+    0.24579932038194152
+  ],
+  "enhancement_shot_std": 0.029940495250075794,
+  "accepted": 53,
+  "active_macropixels": 16,
+  "measurements": 1021,
+  "final_exposures": 20,
+  "output": "/home/lilit/Desktop/PhotonicsAi/hw2/task2/runs/final/experiment_02"
+}

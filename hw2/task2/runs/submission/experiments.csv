@@ -1,0 +1,2 @@
+macropixel_size,focus_size,background_radius,background_regions,iterations,flips,seed,enhancement,initial_enhancement,enhancement_shot_std
+1,3,10,4,500,1,1337,7.495585733631284,0.952112817253363,0.04887541024775717

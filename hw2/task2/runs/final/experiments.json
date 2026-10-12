@@ -1,0 +1,77 @@
+[
+  {
+    "settings": {
+      "macropixel_size": 4,
+      "focus_size": 3,
+      "background_radius": 8,
+      "background_regions": 4,
+      "iterations": 500,
+      "flips": 1,
+      "seed": 0
+    },
+    "enhancement": 2.5968318474206282,
+    "initial_enhancement": 1.5601269543552272,
+    "background_means": [
+      0.31902158817483356,
+      0.33280279302761845,
+      0.3250732439401157,
+      0.3839828340515877
+    ],
+    "enhancement_shot_std": 0.03176207322319071,
+    "accepted": 18,
+    "active_macropixels": 6,
+    "measurements": 1021,
+    "final_exposures": 20,
+    "output": "/home/lilit/Desktop/PhotonicsAi/hw2/task2/runs/final/experiment_01"
+  },
+  {
+    "settings": {
+      "macropixel_size": 2,
+      "focus_size": 5,
+      "background_radius": 10,
+      "background_regions": 6,
+      "iterations": 500,
+      "flips": 1,
+      "seed": 0
+    },
+    "enhancement": 2.7818354556344964,
+    "initial_enhancement": 0.8821674145086944,
+    "background_means": [
+      0.20475376238356205,
+      0.1544070177032007,
+      0.17175586858400738,
+      0.2173483021417859,
+      0.29768299083631333,
+      0.24579932038194152
+    ],
+    "enhancement_shot_std": 0.029940495250075794,
+    "accepted": 53,
+    "active_macropixels": 16,
+    "measurements": 1021,
+    "final_exposures": 20,
+    "output": "/home/lilit/Desktop/PhotonicsAi/hw2/task2/runs/final/experiment_02"
+  },
+  {
+    "settings": {
+      "macropixel_size": 8,
+      "focus_size": 1,
+      "background_radius": 12,
+      "background_regions": 2,
+      "iterations": 500,
+      "flips": 1,
+      "seed": 0
+    },
+    "enhancement": 4.978958450535301,
+    "initial_enhancement": 2.025626768013874,
+    "background_means": [
+      0.7302029477709145,
+      0.7896364968078328
+    ],
+    "enhancement_shot_std": 0.08253304534245134,
+    "accepted": 2,
+    "active_macropixels": 3,
+    "measurements": 1021,
+    "final_exposures": 20,
+    "output": "/home/lilit/Desktop/PhotonicsAi/hw2/task2/runs/final/experiment_03"
+  }
+]
