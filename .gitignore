@@ -1,3 +1,56 @@
 # Local Python environments
-/Task5/silverbox-pinn/src/.venv/
-/Task5/silverbox-pinn/src/env/
+.venv/
+venv/
+env/
+ENV/
+
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Python packaging output
+build/
+dist/
+*.egg-info/
+wheels/
+
+# Local credentials and environment configuration
+.env
+.env.*
+!.env.example
+/.aws/
+/.codex/
+/.agents/
+
+# Editor and OS files
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Local Overleaf source and its compiled outputs
+/report.tex
+/report.pdf
+/report.log
+*.aux
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Keep homework experiment logs, arrays, figures and recordings versionable.
